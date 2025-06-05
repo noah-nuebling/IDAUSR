@@ -96,6 +96,10 @@ def mfdbg_waitfor(process_name):
     """
     Wait for a process to launch and then immediately attach IDA's debugger
         Background: [Jun 2 2025] I made this for analyzing the KeyboardSettings process which has to be started by System Settings to run properly. lldb/Xcode has a builtin feature to wait for a process-launch but IDA's debuggers do not (as far as I can tell). Good thing IDAPython exists! 
+        Performance: This doesn't attach _immediately_ after process launch, but it attaches somewhere in the dyld-setup-code (IIRC) which is well before the _main function and good enough for our current usecase of [Jun 5 2025] Perhaps some objc +[load] calls would execute before this attaches?
+        Alternatives: 
+            - We could perhaps edit the assembly to contain an infinite loop at the entry point (and then break that loop after the debugger attaches)
+            - lldb and apples branch of gdb had a native 'waitfor' option.
     """
     
     # Compile arglist for pgrep clt
@@ -393,7 +397,7 @@ def mfsymgrep(search_pattern, demang=False, addrs:(idaapi.ea_t, idaapi.ea_t)=Non
           l[1] -> symbol name
           l[2] -> demangled symbol name (Only present if demang=True)
     Examples:
-      Print (mangled) symbols appearing in module 0, whose demangled name contains "type metadata"
+      - Print (mangled) symbols appearing in module 0, whose demangled name contains "type metadata"
           print(*[x[1] for x in mfsymgrep(".*type metadata.*", demang=True, addrs=mfmodaddrs(mfmodat(0)))], sep='\n')
     Notes:
       - `debug names` vs `names`:
@@ -482,8 +486,8 @@ class _mfmem(object):
           mfmem[0x891, 'double[3];']                            -> Read 3 64-bit floats at 0x891
           mfmem[0x891, 'struct { uint32_t i; double f; }']      -> Read a struct containing an uint32_t and a double at 0x891
           mfmem[0x891, 'float;'] = 1.2                          -> Write a float at 0x891
-          mfmem[0x891, 'double[3]] = [1.2, 2.3, 3.4]            -> Write an array of 3 doubles at 0x891
-          mfmem[0x891,                                          -> Write a struct containing 2 uint64_t at 0x891
+          mfmem[0x891, 'double[3]] = [1.2, 2.3, 3.4]            -> Write an array of 3 doubles starting at 0x891
+          mfmem[0x891,                                          -> Write a struct containing 2 uint64_t starting at 0x891
               'struct { uint64_t a; uint64_t b; };'] =
                   { 'a':0xfff, 'b': 0xfafafa }
           bytes(mfmem[0x891, 'uint8_t[16];'])                       -> Load bytes from 0x891 to (0x891+15) into a bstring
@@ -553,7 +557,7 @@ def mfderef(p, n=1): # shorthand for dereferencing a pointer
 def mfclssize(cls):
     """
     Get size of an objc class
-      Also works on Swift classes that are registered with the objc runtime (all of them?). Also see mfssize()
+      Should also work on all Swift reference types since they all support the objc runtime to some extent (Wrote more about this elsewhere – grep 'reference types'). Also see mfssize()
     Example usage:
       mfclssize(mfcls("NSBundle"))
     Discussion:
@@ -565,14 +569,14 @@ def mfasize(p):
     """
     Get (a)llocated size at an address
     Example usage:
-      print(hex(mfasize(mfstr(0x1E*"X"))), hex(mfasize(mfstr(0x1F*"X"))))
+      print(hex(mfasize(mfstr(0x1E*"X"))), hex(mfasize(mfstr(0x1F*"X")))) -> This example shows the allocation-size-patterns of NSString
     """
     return Appcall.proto(mfdlsym("_malloc_size"), "size_t __cdecl malloc_size(const void *ptr);")(p)
 
 def mfisobj(p, verbose=False):
     """
     Check if a ptr points to an objc object or a Swift reference type.
-        (All Swift Reference types have the same basic memory layout as objc objects and can interact with the objc runtime. See https://github.com/swiftlang/swift/blob/main/docs/DynamicCasting.md#anyobject)
+        (All Swift reference types have the same basic memory layout as objc objects and can interact with the objc runtime. See https://github.com/swiftlang/swift/blob/main/docs/DynamicCasting.md#anyobject)
     This implementation is a heuristic. It might fail in some cases.
     Alternative implementations:
         - https://blog.timac.org/2016/1124-testing-if-an-arbitrary-pointer-is-a-valid-objective-c-object/IsObjcObject.c
@@ -596,7 +600,7 @@ def mfisobj(p, verbose=False):
 
 def mfcls(cls_name):
     """
-    Get an objc class object
+    Get an objc class object by name
     """
     objc_getClass = Appcall.proto(mfdlsym("_objc_getClass"), "void *f(char *);")
     result = objc_getClass(cls_name)
@@ -643,7 +647,7 @@ def mfdesc(obj_addr):
     """
     Get the result of calling -[description] on an objc-object 
         as a native python string
-    Call this to print an object or NSString to the IDA debugger console.
+    Call this to print an objc object (and some (all?) Swift-reference-types) to the IDA debugger console.
     """
     desc = mfsend(obj_addr, "description")
     desc_c = mfsend(desc, "UTF8String")
@@ -700,7 +704,7 @@ def mfsdemang(x, short=False, return_mang=True):
     Should work just like `xcrun swift-demangle` clt.
        Alternative: Could use Appcall.proto(mfdlsym("_swift_demangle")) instead of idc.demangle_name (But they seem to work the same [May 2025])
     Examples: 
-        mfsdemang(idaapi.get_func(here()).name)   # I'm using this rn cause the stack trace in IDA is showing wrong function names [May 2025]
+        mfsdemang(idaapi.get_func(here()).name)         -> I'm using this rn cause the stack trace in IDA is showing wrong function names [May 2025]
     """
     result = idc.demangle_name(x, get_inf_attr(INF_LONG_DN if not short else INF_SHORT_DN))
     return (result or (x if return_mang else "")) # [May 2025] Return empty-string cause otherwise I sometimes got errors using this in list-comprehension
@@ -760,11 +764,12 @@ def mfsdesc(buffer, typ, detail=1):
     Examples:
         1. mfsdesc(0x16FDFEC10, 0x20962c500)                                                    -> Print, given a ptr to a Swift struct and ptr to its metadata
         2. mfsdesc(bytes((ctypes.c_uint64*2)(cpu.X0, cpu.X1)), '_$sSS')                         -> Print, given a Swift struct in registers X0 and X1, and its mangled type name.
-        3. print(mfsdesc(cpu.X0, mfsmang("[Swift.String:Any]")))                                -> Print, given a ptr to a Swift struct in register X0 and its _non_mangled type name.
-        4. mfsdesc(mfmem[cpu.X29-0x48, 'void*;'], '_$sABCDE')                                   -> Print, given a ptr to a Swift struct in stack-variable FP-0x48 and its mangled type name     ([May 2025] I had to do this after a Swift returned through X8 (See Swift's CallingConventionSummary.rst))
-        5. mfsdesc(mfsstr_tobytes(mfsstr("What is the meaning of loife")), "_$sSS", detail=2)   -> Print with a specific detail-level
-        6. mfsdesc(cpu.SP+0x720+mffrm.var_keypath_array, mfsmang("[Swift.AnyKeyPath]"))         -> Print an array of keypaths from the stack. (This should work for all KeyPath types since they are all subclasses of Swift.AnyKeyPath)
-        7. mfsdesc(mfmem.tobytes([cpu.X0], "uint64_t[1];"), mfsmang("Swift.AnyKeyPath"))        -> Print a keypath that has just been returned to X0 by _swift_getKeyPath
+        3. mfsdesc(mfmem.tobytes([cpu.X0, cpu.X1], "uint64_t[2];"), '_$sSS')                    -> Same thing as above but using mfmem instead of ctypes.
+        4. print(mfsdesc(cpu.X0, mfsmang("[Swift.String:Any]")))                                -> Print, given a ptr to a Swift struct in register X0 and its _non_mangled type name.
+        5. mfsdesc(mfmem[cpu.X29-0x48, 'void*;'], '_$sABCDE')                                   -> Print, given a ptr to a Swift struct in stack-variable FP-0x48 and its mangled type name     ([May 2025] I had to do this after a Swift returned through X8 (See Swift's CallingConventionSummary.rst))
+        6. mfsdesc(mfsstr_tobytes(mfsstr("What is the meaning of loife")), "_$sSS", detail=2)   -> Print with a specific detail-level
+        7. mfsdesc(cpu.SP+0x720+mffrm.var_keypath_array, mfsmang("[Swift.AnyKeyPath]"))         -> Print an array of keypaths from the stack. (This should work for all KeyPath types since they are all subclasses of Swift.AnyKeyPath)
+        8. mfsdesc(mfmem.tobytes(cpu.X0, "void *;"), mfsmang("Swift.AnyKeyPath"))               -> Print a keypath that has just been returned to X0 by _swift_getKeyPath
     
     Note:
         - (At least for some) Swift reference types, you can also send them an objc `description` message (mfdesc()) (This works for swift keypaths as of [May 2025] even though they don't have an @objc annotation in the OSS Swift code)
@@ -801,7 +806,7 @@ def mfsdesc(buffer, typ, detail=1):
         # Call dump()
         #   Discussion:
         #       - [May 2025] For the 'App' struct of my fresh SwiftUI project, even dump() prints nothing interesting. To go deeper we'd probably have to analyze metadata directly (like the Echo lib (https://github.com/Azoy/Echo)) ... But that seems not worth it.
-        #       - [May 2025] We previously used to malloc a buffer for the result string but it caused random failures like 2/10 times. Now we have Appcall handle everything. Update: Still fails randomly
+        #       - [May 2025] We previously used to malloc a buffer for the result string but it caused random failures like 2/10 times. Now we have Appcall handle everything. Update: Still fails randomly (Update2: I think the problem was about not using mfdlsym [Jun 5 2025])
         #   Also see: Dump.swift in Swift OSS
 
         str_sw = mfsstr("") 
@@ -841,7 +846,7 @@ def mfsdesc(buffer, typ, detail=1):
         )
         
         # Validate return value
-        if (0): # This assert failed on a KeyboardSettings.ShortcutBehavior instance for some reason [May 31 2025]
+        if (0): # This assert failed on a KeyboardSettings.ShortcutBehavior instance for some reason (But the resulting description string still looked correct) [May 31 2025]
             assert mfmem[return_buf, f'uint8_t[{mfssize(typ)}];'] == mfmem[buffer, f'uint8_t[{mfssize(typ)}];'], "Dump returns its input value. (Why does it even do that?)"
         
         # Free return buffer
@@ -965,8 +970,8 @@ class MFFlag(enum.IntFlag):
     
     """
     MFFlag
-            Update: [May 20 2025] Do not use this. The abstraction is not worth it and only obscures things. This was supposed to be a lighter abstraction for Appcall options than mfcall, but it's even worse. Just use Appcall directly.
         Higher-level interface for bitflags. 
+            [Update: [May 20 2025] Do not use this. The abstraction is not worth it and only obscures things. This was supposed to be a lighter abstraction for Appcall options than mfcall, but it's even worse. Just use Appcall directly.]
         Example-usage:
             class MFAppcallOpts(MFFlag):
                 debug   = Appcall.APPCALL_DEBEV
@@ -1015,7 +1020,7 @@ class _mfcall(ida_idd.Appcall_callable__):
                 Get: Appcall[mfdlsym('_printf')].options
                 Set:
                     f = Appcall[mfdlsym('_printf')]
-                    f.timeout = 100; f.options |= 0         # `options|=0` is necessary to activate the timeout in IDA 9.1.250226 (They should fix that) 
+                    f.timeout = 100; f.options |= 0         # About `options|=0`: It is necessary to activate the timeout in IDA 9.1.250226 I think (They should fix that) 
                     f.options = idaapi.APPCALL_MANUAL
                     f("Hello %s", "World")
                 
