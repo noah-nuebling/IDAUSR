@@ -1,0 +1,19 @@
+
+# See: https://hex-rays.com/blog/igors-tip-of-the-week-33-idas-user-directory-idausr
+
+# Potentially sensitive
+ida.reg          
+#   ^ This might contain stuff that is worth backing up – but it's n human readable – so I don't know if it has sensitive stuff.
+
+# Temp data
+noahsworkdir/ 
+.cache/         
+#   ^ Don't know what this is – did I create this?
+trusted_idb_list.bin
+trusted_i64_list.bin
+proccache.lst
+proccache64.lst
+
+# VSCode
+.vscode/    
+#   ^ Any VSCode settings we change here is probably an accident
