@@ -6,6 +6,7 @@ The most interesting thing here is the IDAPython code which contains powerful to
 
 Also see:
 - Igor's TOTW – user directory: https://hex-rays.com/blog/igors-tip-of-the-week-33-idas-user-directory-idausr
+- `Notes dir > Reverse Engineering [Apr 2025].md`
 
 Notes:
 - [Jun 5 2025] ! Make sure not to leak anything sensitive ! (In case we publish this repo)
