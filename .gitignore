@@ -3,7 +3,7 @@
 
 # Potentially sensitive
 ida.reg          
-#   ^ This might contain stuff that is worth backing up – but it's n human readable – so I don't know if it has sensitive stuff.
+#   ^ This might contain stuff that is worth backing up – but it's not human readable – so I don't know if it has sensitive stuff.
 
 # Temp data
 noahsworkdir/ 
