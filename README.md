@@ -2,7 +2,7 @@
 
 This repo is a backup of my IDA Pro user directory which is found at `~/.idapro` on macOS.
 
-The most interesting thing here is the IDAPython code which contains powerful tools for debugging and runtime-introspecting Objective-C and Swift code with IDA. [Jun 5 2025]
+The most interesting thing here is the IDAPython code which contains powerful tools for debugging and runtime-introspecting Objective-C and Swift code with the IDA Pro Debugger. [Jun 5 2025]
     
 Update: [Aug 2025] 
 
